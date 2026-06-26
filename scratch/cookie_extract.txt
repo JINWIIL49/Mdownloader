@@ -1,0 +1,1 @@
+﻿I will search for the cookie-handling logic in `python-backend/main.py` to see how it expects the `YOUTUBE_COOKIES` environment variable to be structured.

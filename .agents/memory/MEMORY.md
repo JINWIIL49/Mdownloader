@@ -1,0 +1,2 @@
+- [Spotify API access in Replit](spotify-api-replit.md) — `open.spotify.com/get_access_token` returns 403 (blocked); use oEmbed + embed page scraping instead
+- [Spotify download flow](spotify-download-flow.md) — oEmbed for title/thumb, embed page for artists, yt-dlp YouTube search, davidcyriltech ytmp3 for download

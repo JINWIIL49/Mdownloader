@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: sweet-sync-vault
+    env: docker
+    dockerfilePath: Dockerfile
+    dockerContext: .
+    plan: free
+    numInstances: 1
+    healthCheckPath: /health

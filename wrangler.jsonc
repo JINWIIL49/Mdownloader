@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+"name": "mdownloader",
+  "compatibility_date": "2025-09-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "dist/server/server.js",
+  "alias": {
+    "tanstack-start-manifest:v": "./dist/server/assets/_tanstack-start-manifest_v-C-1hVpv6.js",
+    "tanstack-start-injected-head-scripts:v": "./dist/server/assets/start-D4mdwD77.js",
+    "#tanstack-start-plugin-adapters": "./dist/server/assets/__23tanstack-start-plugin-adapters-Cwee5PKy.js"
+  },
+  "vars": {
+    "VITE_PY_BACKEND_URL": "https://mdownloader-production.up.railway.app",
+    "VITE_SUPABASE_URL": "https://mdeaizzwijbnarzqrlbh.supabase.co",
+    "VITE_SUPABASE_PUBLISHABLE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZWFpenp3aWpibmFyenFybGJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4MTI5NjksImV4cCI6MjA5MjM4ODk2OX0.QqjYI5_Zzr7jTceLxH7lWY5nJGBHOLoS3WkNQ5Lgpdo",
+    "VITE_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kZWFpenp3aWpibmFyenFybGJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4MTI5NjksImV4cCI6MjA5MjM4ODk2OX0.QqjYI5_Zzr7jTceLxH7lWY5nJGBHOLoS3WkNQ5Lgpdo"
+  },
+  "assets": {
+    "directory": "./dist/client"
+  },
+  "build": {
+    "command": "npm run build"
+  }
+}
