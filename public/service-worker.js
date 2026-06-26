@@ -1,8 +1,8 @@
 // Sweet Sync Vault – Service Worker
 // Supports Background Fetch API for downloads that survive tab minimization/hiding
 
-const CACHE_NAME = 'ssv-cache-v2';
-const BG_FETCH_CACHE = 'ssv-bgfetch-v1';
+const CACHE_NAME = 'ssv-cache-v3';
+const BG_FETCH_CACHE = 'ssv-bgfetch-v2';
 
 // In-memory store of {id -> {filename, resolveTs}} for active background fetches
 const bgFetchMeta = new Map();
