@@ -1903,28 +1903,51 @@ async def spotify_collection_info(data: dict):
 
     searched = await asyncio.gather(*[search_one(t) for t in tracks_raw])
 
-    # ---------- Build media list ----------
-    media_list = []
-    for t in searched:
+    # ---------- Build one MediaItem per track ----------
+    items_list = []
+    for idx, t in enumerate(searched):
         yt_id = t.get("yt_id")
         if not yt_id:
             continue
         cover_param = urllib.parse.quote(t["cover_url"], safe='') if t.get("cover_url") else ""
-        media_list.append({
-            "url": f"ytdlp:{yt_id}:bestaudio:{cover_param}",
-            "filename": f"{safe_filename(t['artists'])} - {safe_filename(t['title'])}.mp3",
-            "quality": "Full MP3 Audio",
-            "type": "audio",
-            "trackTitle": t["title"],
-            "trackArtist": t["artists"],
-        })
+        track_title   = t.get("title", "Track")
+        track_artists = t.get("artists", "")
+        track_album   = t.get("album", collection_title)
+        safe_name     = f"{safe_filename(track_artists)} - {safe_filename(track_title)}"
+
+        downloads = [
+            {
+                "label": "Full MP3 Audio",
+                "url": f"ytdlp:{yt_id}:bestaudio:{cover_param}",
+                "filename": f"{safe_name}.mp3",
+                "functionName": "spotify-download",
+                "quality": "Full MP3 Audio",
+                "mimeType": "audio",
+                # pass metadata so the download endpoint can embed tags
+                "tag_title":  track_title,
+                "tag_artist": track_artists,
+                "tag_album":  track_album,
+                "cover_url":  t.get("cover_url", ""),
+            }
+        ]
         if t.get("preview_url"):
-            media_list.append({
+            downloads.append({
+                "label": "30s Preview",
                 "url": t["preview_url"],
-                "filename": f"{safe_filename(t['artists'])} - {safe_filename(t['title'])} (Preview).mp3",
+                "filename": f"{safe_name} (Preview).mp3",
+                "functionName": "spotify-download",
                 "quality": "30s Preview",
-                "type": "audio",
+                "mimeType": "audio",
             })
+
+        items_list.append({
+            "id": f"track-{idx}",
+            "type": "audio",
+            "title": track_title,
+            "description": track_artists,
+            "thumbnail": t.get("cover_url") or collection_cover,
+            "downloads": downloads,
+        })
 
     return {
         "platform": "spotify",
@@ -1934,8 +1957,8 @@ async def spotify_collection_info(data: dict):
         "authorName": collection_author,
         "cover": collection_cover,
         "trackCount": len(tracks_raw),
-        "resolvedCount": len([t for t in searched if t.get("yt_id")]),
-        "media": media_list
+        "resolvedCount": len(items_list),
+        "items": items_list,
     }
 
 @app.get("/spotify/progress")

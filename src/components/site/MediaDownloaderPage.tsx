@@ -240,7 +240,8 @@ export const MediaDownloaderPage = ({
           // Use the mode's override endpoint if provided (e.g. spotify/collection-info for albums/playlists)
           const defaultEndpoint = functionName === "youtube-download" ? "youtube" : (functionName === "spotify-download" ? "spotify" : "mediafire");
           const defaultPath = `${defaultEndpoint}/info`;
-          const infoPath = activeMode.infoEndpointOverride ?? defaultPath;
+          // Use the detected mode's override first, then active mode's, then the default endpoint
+          const infoPath = detectedMode?.infoEndpointOverride ?? activeMode.infoEndpointOverride ?? defaultPath;
           console.log(`Fetching ${infoPath} directly from local Python backend...`);
           const res = await fetch(`${localPy}/${infoPath}`, {
             method: "POST",
