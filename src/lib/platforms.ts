@@ -50,7 +50,6 @@ export const PLATFORM_CONFIGS: PlatformConfig[] = [
     route: "/youtube",
     blurb: "Videos, Shorts, audio, playlists, and thumbnails.",
     icon: Youtube,
-    paused: true,
   },
   {
     key: "twitter",

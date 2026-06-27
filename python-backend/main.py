@@ -553,38 +553,42 @@ def make_ytdlp_hook(progress_key: str):
 
 @app.post("/youtube/info")
 async def youtube_info(data: dict):
-    raise HTTPException(
-        status_code=503,
-        detail="YouTube downloader is temporarily paused for maintenance. Please use other active platforms."
-    )
+    url   = data.get("url", "").strip()
+    mode  = data.get("mode", "video")
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing URL")
+    is_playlist = ("list=" in url or "/playlist?" in url) and mode not in ("video", "short", "audio")
 
-    
     try:
+        # Best-effort anti-bot yt-dlp options shared by all YouTube extractions.
+        # ios + mweb + tv_embedded: three separate YouTube player clients.
+        # tv_embedded bypasses age-gating; ios bypasses most bot checks;
+        # mweb is the mobile web fallback that rarely gets blocked.
+        _yt_extractor_args = {'youtube': {'player_client': ['ios', 'mweb', 'tv_embedded']}}
+        _common_ydl = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 15,
+            'nocheckcertificate': True,
+            'extractor_args': _yt_extractor_args,
+            'http_headers': {
+                'User-Agent': (
+                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                ),
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        }
+
         if is_playlist and mode not in ("video", "short"):
             # Playlist Mode
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': True,
-                'socket_timeout': 10,
-                'cookiefile': get_cookie_file(),
-            }
+            ydl_opts = {**_common_ydl, 'extract_flat': True}
             is_cloud = "RENDER" in os.environ or "RAILWAY_STATIC_URL" in os.environ or os.path.exists("/.dockerenv")
             if is_cloud:
                 cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
                 ydl_opts.update({
-                    'js_runtimes': {
-                        'deno': {'path': None},
-                        'node': {'path': None}
-                    },
                     'remote_components': ['ejs:github'],
                     'cache_dir': cache_dir,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['ios', 'web']
-                        }
-                    },
-                    'nocheckcertificate': True
                 })
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -660,33 +664,18 @@ async def youtube_info(data: dict):
                 video_id = vid_match.group(1)
             elif len(url) == 11:
                 video_id = url
-                
+
             if not video_id:
                 raise HTTPException(status_code=400, detail="Could not parse YouTube video ID")
-                
+
             video_url = f"https://www.youtube.com/watch?v={video_id}"
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 10,
-                'cookiefile': get_cookie_file(),
-            }
+            ydl_opts = dict(_common_ydl)
             is_cloud = "RENDER" in os.environ or "RAILWAY_STATIC_URL" in os.environ or os.path.exists("/.dockerenv")
             if is_cloud:
                 cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
                 ydl_opts.update({
-                    'js_runtimes': {
-                        'deno': {'path': None},
-                        'node': {'path': None}
-                    },
                     'remote_components': ['ejs:github'],
                     'cache_dir': cache_dir,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['ios', 'web']
-                        }
-                    },
-                    'nocheckcertificate': True
                 })
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
@@ -1056,23 +1045,29 @@ async def youtube_download(
             sys.executable, "-u", "-m", "yt_dlp",
             "-f", format_selector,
             "--ffmpeg-location", ffmpeg_exe,
-            "--no-check-certificate",           # Skip SSL verify to avoid TLS errors
-            "--newline",                        # Forces newlines in progress output for parsing
-            "--no-colors",                      # Cleaner output for parsing
-            "--retries", "5",                   # Retry failed requests up to 5 times
-            "--fragment-retries", "5",          # Retry individual fragments up to 5 times
-            "--sleep-requests", "1",            # 1-second pause between requests to avoid 429
-            "--js-runtimes", "deno",            # Try Deno (faster, system-wide) first
-            "--js-runtimes", "node",            # fallback to Node
+            "--no-check-certificate",
+            "--newline",
+            "--no-colors",
+            "--retries", "5",
+            "--fragment-retries", "5",
+            # Human-like randomised sleep between requests (1–4 s) — avoids 429s.
+            "--sleep-interval", "1",
+            "--max-sleep-interval", "4",
+            "--js-runtimes", "deno",
+            "--js-runtimes", "node",
+            # Three player clients in priority order:
+            # ios   — bypasses most bot checks (mobile device auth, no JS challenge)
+            # mweb  — mobile-web fallback, rarely blocked
+            # tv_embedded — bypasses age-gating without cookies
+            "--extractor-args", "youtube:player_client=ios,mweb,tv_embedded",
+            # Spoof a real iOS Safari UA so YouTube serves the ios client properly
+            "--user-agent",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "--add-header", "Accept-Language:en-US,en;q=0.9",
         ]
 
-        yt_args.extend([
-            "--extractor-args", "youtube:player_client=ios,web"
-        ])
-
         if is_cloud:
-            # On Render/Railway/Docker (datacenter IPs), we must prioritize the ios client to bypass bot checks.
-            # EJS challenge scripts are pre-baked in the Docker image cache directory.
             cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
             yt_args.extend([
                 "--cache-dir", cache_dir,
