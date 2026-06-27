@@ -586,16 +586,30 @@ async def youtube_info(data: dict):
         }
 
         if is_playlist and mode not in ("video", "short"):
-            # Playlist Mode
-            ydl_opts = {**_common_ydl, 'extract_flat': True}
-            is_cloud = "RENDER" in os.environ or "RAILWAY_STATIC_URL" in os.environ or os.path.exists("/.dockerenv")
-            if is_cloud:
-                cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
-                ydl_opts.update({
-                    'remote_components': ['ejs:github'],
-                    'cache_dir': cache_dir,
-                })
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Playlist Mode — use web client for extract_flat (browse API).
+            # android_vr/android_creator clients return HTTP 400/404 on the
+            # browse endpoint used by extract_flat; web client handles it correctly.
+            playlist_ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'socket_timeout': 20,
+                'nocheckcertificate': True,
+                'extract_flat': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web'],
+                    }
+                },
+                'http_headers': {
+                    'User-Agent': (
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/125.0.0.0 Safari/537.36'
+                    ),
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
+            }
+            with yt_dlp.YoutubeDL(playlist_ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             
             playlist_title = info.get("title", "YouTube Playlist")
@@ -765,9 +779,10 @@ async def get_youtube_progress(filename: str):
             "progress": entry.get('progress', 0),
             "downloaded_bytes": entry.get('downloaded_bytes', 0),
             "total_bytes": entry.get('total_bytes', 0),
+            "speed": entry.get('speed', 0),
         }
     # Fallback for legacy int values or missing keys
-    return {"progress": entry or 0, "downloaded_bytes": 0, "total_bytes": 0}
+    return {"progress": entry or 0, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
 
 @app.post("/youtube/cancel")
 async def cancel_youtube_download(data: dict):
@@ -942,23 +957,25 @@ async def youtube_download(
         raise HTTPException(status_code=400, detail="Invalid ytdlp URI format")
         
     video_id = parts[1]
-    
+
     # 1. Try DavidCyrilTech API first to bypass yt-dlp slow download/restrictions
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        
+
         is_audio_only = filename.lower().endswith((".m4a", ".mp3", ".webm", ".wav"))
         api_endpoint = "ytmp3" if is_audio_only else "ytmp4"
         yt_url = f"https://www.youtube.com/watch?v={video_id}"
         api_url = f"https://apis.davidcyriltech.my.id/download/{api_endpoint}?url={urllib.parse.quote(yt_url)}"
         print(f"[Stream] Trying DavidCyrilTech API: {api_url}")
-        
+
+        yt_progress[progress_key] = {"progress": 5, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
+
         api_req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(api_req, context=ctx, timeout=15) as api_res:
+        with urllib.request.urlopen(api_req, context=ctx, timeout=20) as api_res:
             api_res_data = json.loads(api_res.read().decode('utf-8'))
-            
+
         if api_res_data.get("success"):
             res_obj = api_res_data.get("result", {})
             download_url = (
@@ -973,8 +990,7 @@ async def youtube_download(
                 dl_headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
-                dl_req = urllib.request.Request(download_url, headers=dl_headers)
-                
+
                 content_length = None
                 try:
                     head_req = urllib.request.Request(download_url, headers=dl_headers, method='HEAD')
@@ -982,17 +998,46 @@ async def youtube_download(
                         content_length = head_res.info().get('Content-Length')
                 except Exception as head_err:
                     print(f"[Stream] HEAD request failed for API link: {head_err}")
-                
+
+                total_size = int(content_length) if content_length else 0
+                yt_progress[progress_key] = {"progress": 15, "downloaded_bytes": 0, "total_bytes": total_size, "speed": 0}
+
+                import time as _time
+
                 async def file_sender():
-                    with urllib.request.urlopen(dl_req, context=ctx, timeout=30) as resp:
+                    _dl_req = urllib.request.Request(download_url, headers=dl_headers)
+                    _bytes_done = 0
+                    _last_time = _time.monotonic()
+                    _last_bytes = 0
+                    with urllib.request.urlopen(_dl_req, context=ctx, timeout=60) as resp:
                         while True:
                             if await request.is_disconnected():
                                 break
                             chunk = resp.read(65536)
                             if not chunk:
                                 break
+                            _bytes_done += len(chunk)
+                            # Calculate speed every ~0.5s
+                            _now = _time.monotonic()
+                            _elapsed = _now - _last_time
+                            _speed = 0
+                            if _elapsed >= 0.5:
+                                _speed = int((_bytes_done - _last_bytes) / _elapsed)
+                                _last_time = _now
+                                _last_bytes = _bytes_done
+                            # Update progress 15–95%
+                            if total_size > 0:
+                                _pct = 15 + int((_bytes_done / total_size) * 80)
+                            else:
+                                _pct = 50
+                            yt_progress[progress_key] = {
+                                "progress": min(95, _pct),
+                                "downloaded_bytes": _bytes_done,
+                                "total_bytes": total_size,
+                                "speed": _speed,
+                            }
                             yield chunk
-                            
+
                 safe_filename = filename.encode("ascii", errors="replace").decode("ascii")
                 headers_response = {
                     "Content-Disposition": f"attachment; filename=\"{safe_filename}\"",
@@ -1000,7 +1045,7 @@ async def youtube_download(
                 }
                 if content_length:
                     headers_response["Content-Length"] = str(content_length)
-                
+
                 print(f"[Stream] Streaming from DavidCyrilTech API link")
                 return StreamingResponse(file_sender(), headers=headers_response)
     except Exception as api_err:
@@ -1053,11 +1098,8 @@ async def youtube_download(
             "--no-check-certificate",
             "--newline",
             "--no-colors",
-            "--retries", "5",
-            "--fragment-retries", "5",
-            # Human-like randomised sleep between requests (1–4 s) — avoids 429s.
-            "--sleep-interval", "1",
-            "--max-sleep-interval", "4",
+            "--retries", "3",
+            "--fragment-retries", "3",
             # android_vr and android_creator work without GVS PO tokens and
             # provide full 4K/1080p/720p quality. player_skip=webpage avoids JS challenge.
             "--extractor-args", "youtube:player_client=android_vr,android_creator,android;player_skip=webpage",
@@ -1183,6 +1225,15 @@ async def youtube_download(
                     total_bytes = int(size_val * mult)
                     downloaded_bytes = int(total_bytes * (pct / 100.0))
 
+                    # Parse download speed: "at 5.23MiB/s" or "at 523.12KiB/s"
+                    speed_bytes = 0
+                    m_spd = re.search(r'at\s+(\d+(?:\.\d+)?)\s*([KkMmGg]i?[Bb])\/s', line)
+                    if m_spd:
+                        spd_val = float(m_spd.group(1))
+                        spd_unit = m_spd.group(2).lower()
+                        spd_mult = 1024 if 'k' in spd_unit else (1024 * 1024 if 'm' in spd_unit else 1024 * 1024 * 1024)
+                        speed_bytes = int(spd_val * spd_mult)
+
                     if is_dual_stream:
                         if current_dest == 0:
                             video_total = total_bytes
@@ -1204,6 +1255,7 @@ async def youtube_download(
                         "progress": min(95, overall_pct),
                         "downloaded_bytes": video_downloaded + audio_downloaded,
                         "total_bytes": video_total + audio_total,
+                        "speed": speed_bytes,
                     }
                 elif "[Merger] Merging formats" in line or "Merging formats" in line:
                     yt_progress[progress_key] = {

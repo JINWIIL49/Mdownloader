@@ -498,18 +498,24 @@ export const triggerDownloadVia = async (
         onClick: () => { void cancelDownload(); }
       };
 
-      const showServerProgress = (serverPercent: number, downloadedBytes: number, totalBytes: number) => {
+      const showServerProgress = (serverPercent: number, downloadedBytes: number, totalBytes: number, speedBytes = 0) => {
         if (serverDone || userCancelled) return;
         const effectivePct = Math.max(serverPercent, highestPct);
         highestPct = effectivePct;
 
-        let statusText = `Processing on server… ${effectivePct}%`;
+        const speedStr = speedBytes > 0
+          ? ` · ${speedBytes >= 1024 * 1024
+              ? `${(speedBytes / (1024 * 1024)).toFixed(1)} MB/s`
+              : `${(speedBytes / 1024).toFixed(0)} KB/s`}`
+          : '';
+
+        let statusText = `Processing on server… ${effectivePct}%${speedStr}`;
         if (effectivePct >= 99) {
           statusText = 'Merging audio & video… almost there!';
         } else if (totalBytes > 0 && downloadedBytes > 0) {
           const doneMB  = (downloadedBytes / (1024 * 1024)).toFixed(1);
           const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
-          statusText = `Processing on server… ${effectivePct}% (${doneMB} / ${totalMB} MB)`;
+          statusText = `Downloading… ${effectivePct}%${speedStr} (${doneMB} / ${totalMB} MB)`;
         } else if (totalBytes === 0 && downloadedBytes > 0) {
           const doneMB  = (downloadedBytes / (1024 * 1024)).toFixed(1);
           statusText = `Recording live… ${effectivePct}% (${doneMB} MB)`;
@@ -538,7 +544,7 @@ export const triggerDownloadVia = async (
           if (!r.ok) return;
           const data = await r.json();
           const pct: number = data.progress ?? 0;
-          showServerProgress(pct, data.downloaded_bytes ?? 0, data.total_bytes ?? 0);
+          showServerProgress(pct, data.downloaded_bytes ?? 0, data.total_bytes ?? 0, data.speed ?? 0);
         } catch {
           /* network blip – keep polling */
         }
