@@ -786,7 +786,7 @@ export const MediaDownloaderPage = ({
                                      }}
                                    >
                                      <Download className="h-3.5 w-3.5 mr-1" />
-                                     Download Video
+                                     {item.type === "audio" ? "Download MP3" : item.type === "image" ? "Download Image" : item.type === "link" ? "Download File" : "Download Video"}
                                    </Button>
                                    {item.downloads.find(d => d.label.toLowerCase().includes("audio")) && (
                                      <Button
@@ -864,7 +864,7 @@ export const MediaDownloaderPage = ({
                                      }}
                                    >
                                      <Download className="h-3.5 w-3.5 mr-1" />
-                                     Download Video
+                                     {item.type === "audio" ? "Download MP3" : item.type === "image" ? "Download Image" : item.type === "link" ? "Download File" : "Download Video"}
                                    </Button>
                                    {item.downloads.find(d => d.label.toLowerCase().includes("audio")) && (
                                      <Button
