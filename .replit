@@ -36,9 +36,9 @@ outputType = "webview"
 channel = "stable-25_05"
 packages = ["ffmpeg-full", "freetype", "lcms2", "libGL", "libGLU", "libimagequant", "libjpeg", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]
 
+[deployment]
+deploymentTarget = "cloudrun"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[deployment]
-deploymentTarget = "cloudrun"
