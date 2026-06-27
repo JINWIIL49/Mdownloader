@@ -942,42 +942,48 @@ export const downloadMixedZip = async (
     const folder = zip.folder(baseName) ?? zip;
     let done = 0;
     const failed: string[] = [];
-    // Sequential to surface progress and avoid hammering the proxy.
-    // Each item gets its own 3-minute timeout so a hung yt-dlp process
-    // doesn't stall the entire zip indefinitely.
     const ITEM_TIMEOUT_MS = 3 * 60 * 1000;
-    for (const item of items) {
+    const CONCURRENCY = 4;
+
+    // Download up to CONCURRENCY tracks at the same time.
+    const downloadItem = async (item: ZipItem): Promise<{ filename: string; blob: Blob | null }> => {
       if (signal?.aborted) throw new Error("Download cancelled");
-      onProgress?.(done, items.length, item.filename);
-      showToast(`Packaging ${done + 1}/${items.length}: ${item.filename}`);
       const itemController = new AbortController();
       const timeoutId = setTimeout(() => itemController.abort(), ITEM_TIMEOUT_MS);
-      // Propagate the user's cancel signal into the per-item controller too.
       const onUserCancel = () => itemController.abort();
       signal?.addEventListener("abort", onUserCancel);
       try {
-        const res = await fetchWithRetry(proxyUrl(item.url, item.filename, item.functionName || defaultFunctionName, item, localPy), {
-          headers: {
-            Accept: "*/*",
-          },
-          signal: itemController.signal,
-        });
-        if (!res.ok) {
-          failed.push(item.filename);
-        } else {
-          const blob = await res.blob();
-          folder.file(item.filename, blob);
-        }
-      } catch (itemErr) {
-        // Re-throw only when the user explicitly cancelled (not a per-item timeout).
+        const res = await fetchWithRetry(
+          proxyUrl(item.url, item.filename, item.functionName || defaultFunctionName, item, localPy),
+          { headers: { Accept: "*/*" }, signal: itemController.signal },
+        );
+        if (!res.ok) return { filename: item.filename, blob: null };
+        const blob = await res.blob();
+        return { filename: item.filename, blob };
+      } catch {
         if (signal?.aborted) throw new Error("Download cancelled");
-        failed.push(item.filename);
+        return { filename: item.filename, blob: null };
       } finally {
         clearTimeout(timeoutId);
         signal?.removeEventListener("abort", onUserCancel);
       }
-      done += 1;
-      onProgress?.(done, items.length, item.filename);
+    };
+
+    // Process in waves of CONCURRENCY, updating the toast as each wave finishes.
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      if (signal?.aborted) throw new Error("Download cancelled");
+      const batch = items.slice(i, i + CONCURRENCY);
+      showToast(`Downloading ${Math.min(i + CONCURRENCY, items.length)}/${items.length} tracks...`);
+      const results = await Promise.all(batch.map(downloadItem));
+      for (const { filename, blob } of results) {
+        if (blob) {
+          folder.file(filename, blob);
+        } else {
+          failed.push(filename);
+        }
+        done += 1;
+        onProgress?.(done, items.length, filename);
+      }
     }
 
     const succeeded = items.length - failed.length;
