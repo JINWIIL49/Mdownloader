@@ -132,6 +132,22 @@ export const normalizeEdgeMediaResult = <T extends RawMediaPayload>(
   const rawMedia = Array.isArray(payload.media) ? payload.media : [];
   const videoId = payload.videoId ?? payload.id ?? null;
 
+  let items = normalizeDownloads(rawMedia, fallbackPlatform, videoId);
+
+  // For Spotify tracks the normalizer sets item.title to the quality label
+  // ("Full MP3 Audio") and item.description to that same quality string.
+  // Fix: set item.title to the song name and item.description to the artists so
+  // that (a) the UI shows "Artist - Song" and (b) buildFilename's {username}
+  // token resolves to the artist (it uses item.description for audio items).
+  if (fallbackPlatform === "spotify" && payload.title) {
+    const artists = payload.username ?? payload.authorName ?? payload.author ?? null;
+    const songTitle = payload.title;
+    items = items.map((item) => {
+      if (item.type !== "audio") return item;
+      return { ...item, title: songTitle, description: artists };
+    });
+  }
+
   return {
     platform: fallbackPlatform,
     sourceType: payload.mode ?? payload.platform ?? fallbackPlatform,
@@ -141,7 +157,7 @@ export const normalizeEdgeMediaResult = <T extends RawMediaPayload>(
     authorName: payload.authorName ?? payload.author ?? null,
     profilePic: null,
     cover: payload.cover ?? payload.thumbnail ?? null,
-    items: normalizeDownloads(rawMedia, fallbackPlatform, videoId),
+    items,
     resolvedUrl: payload.resolvedUrl ?? payload.sourceUrl ?? null,
   };
 };
