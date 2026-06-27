@@ -1795,7 +1795,7 @@ async def spotify_info(data: dict):
         media_list = [{
             "url": file_url,
             "filename": f"{safe_filename(artists)} - {safe_filename(title)}.mp3",
-            "quality": "Full MP3 Audio",
+            "quality": "Download MP3",
             "type": "audio"
         }]
         if preview_url:
@@ -1987,11 +1987,11 @@ async def spotify_collection_info(data: dict):
 
         downloads = [
             {
-                "label": "Full MP3 Audio",
+                "label": "Download MP3",
                 "url": f"ytdlp:{yt_id}:bestaudio:{cover_param}",
                 "filename": f"{safe_name}.mp3",
                 "functionName": "spotify-download",
-                "quality": "Full MP3 Audio",
+                "quality": "Download MP3",
                 "mimeType": "audio",
                 # pass metadata so the download endpoint can embed tags
                 "tag_title":  track_title,
@@ -2116,8 +2116,9 @@ async def spotify_download(
         raise HTTPException(status_code=400, detail="Invalid ytdlp URI format")
         
     video_id = parts[1]
-    # Cover URL is encoded as the 4th segment: ytdlp:{id}:bestaudio:{cover_url_encoded}
-    embedded_cover_url = urllib.parse.unquote(parts[3]) if len(parts) >= 4 else None
+    # Cover URL is the 4th+ segment joined back with ":" because the decoded HTTPS
+    # URL contains its own colons: ytdlp:{id}:bestaudio:https://...
+    embedded_cover_url = ":".join(parts[3:]) if len(parts) >= 4 else None
     # Track title/artist from query params for ID3 tagging
     req_params = dict(request.query_params)
     tag_title   = req_params.get("title", "")
@@ -2156,6 +2157,9 @@ async def spotify_download(
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
 
+                # Initialise progress so the frontend immediately sees activity
+                yt_progress[filename] = {"progress": 5, "downloaded_bytes": 0, "total_bytes": 0}
+
                 # Download to a temp file so we can embed cover art before streaming
                 temp_dir = os.path.join(os.getcwd(), "temp_downloads")
                 os.makedirs(temp_dir, exist_ok=True)
@@ -2163,17 +2167,32 @@ async def spotify_download(
 
                 dl_req = urllib.request.Request(download_url, headers=dl_headers)
                 print(f"[Spotify] Downloading DavidCyrilTech audio to temp file for cover-art embedding...")
+                downloaded_bytes = 0
+                total_bytes = 0
                 with urllib.request.urlopen(dl_req, context=ctx, timeout=60) as dl_resp:
+                    cl = dl_resp.info().get("Content-Length")
+                    total_bytes = int(cl) if cl else 0
+                    yt_progress[filename] = {"progress": 10, "downloaded_bytes": 0, "total_bytes": total_bytes}
                     with open(dc_temp_path, "wb") as tmp_f:
                         while True:
                             chunk = dl_resp.read(65536)
                             if not chunk:
                                 break
                             tmp_f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            if total_bytes > 0:
+                                pct = int(10 + (downloaded_bytes / total_bytes) * 80)
+                            else:
+                                pct = min(85, yt_progress[filename].get("progress", 10) + 2)
+                            yt_progress[filename] = {"progress": pct, "downloaded_bytes": downloaded_bytes, "total_bytes": total_bytes}
+
+                yt_progress[filename] = {"progress": 92, "downloaded_bytes": downloaded_bytes, "total_bytes": total_bytes}
 
                 # Embed cover art + ID3 tags
                 if embedded_cover_url:
                     _embed_cover_art_into_mp3(dc_temp_path, embedded_cover_url, title=tag_title, artists=tag_artist, album=tag_album)
+
+                yt_progress[filename] = {"progress": 99, "downloaded_bytes": downloaded_bytes, "total_bytes": total_bytes}
 
                 dc_size = os.path.getsize(dc_temp_path)
                 safe_fn = filename.encode("ascii", errors="replace").decode("ascii")
