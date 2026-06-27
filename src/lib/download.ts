@@ -943,16 +943,24 @@ export const downloadMixedZip = async (
     let done = 0;
     const failed: string[] = [];
     // Sequential to surface progress and avoid hammering the proxy.
+    // Each item gets its own 3-minute timeout so a hung yt-dlp process
+    // doesn't stall the entire zip indefinitely.
+    const ITEM_TIMEOUT_MS = 3 * 60 * 1000;
     for (const item of items) {
       if (signal?.aborted) throw new Error("Download cancelled");
       onProgress?.(done, items.length, item.filename);
       showToast(`Packaging ${done + 1}/${items.length}: ${item.filename}`);
+      const itemController = new AbortController();
+      const timeoutId = setTimeout(() => itemController.abort(), ITEM_TIMEOUT_MS);
+      // Propagate the user's cancel signal into the per-item controller too.
+      const onUserCancel = () => itemController.abort();
+      signal?.addEventListener("abort", onUserCancel);
       try {
         const res = await fetchWithRetry(proxyUrl(item.url, item.filename, item.functionName || defaultFunctionName, item, localPy), {
           headers: {
             Accept: "*/*",
           },
-          signal,
+          signal: itemController.signal,
         });
         if (!res.ok) {
           failed.push(item.filename);
@@ -961,10 +969,12 @@ export const downloadMixedZip = async (
           folder.file(item.filename, blob);
         }
       } catch (itemErr) {
-        if (itemErr instanceof Error && (itemErr.name === "AbortError" || itemErr.message === "Download cancelled")) {
-          throw itemErr;
-        }
+        // Re-throw only when the user explicitly cancelled (not a per-item timeout).
+        if (signal?.aborted) throw new Error("Download cancelled");
         failed.push(item.filename);
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onUserCancel);
       }
       done += 1;
       onProgress?.(done, items.length, item.filename);
