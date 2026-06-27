@@ -941,23 +941,40 @@ export const downloadMixedZip = async (
     const zip = new JSZip();
     const folder = zip.folder(baseName) ?? zip;
     let done = 0;
+    const failed: string[] = [];
     // Sequential to surface progress and avoid hammering the proxy.
     for (const item of items) {
       if (signal?.aborted) throw new Error("Download cancelled");
       onProgress?.(done, items.length, item.filename);
       showToast(`Packaging ${done + 1}/${items.length}: ${item.filename}`);
-      const res = await fetchWithRetry(proxyUrl(item.url, item.filename, item.functionName || defaultFunctionName, item, localPy), {
-        headers: {
-          Accept: "*/*",
-        },
-        signal,
-      });
-      if (!res.ok) throw new Error(await readDownloadError(res));
-      const blob = await res.blob();
-      folder.file(item.filename, blob);
+      try {
+        const res = await fetchWithRetry(proxyUrl(item.url, item.filename, item.functionName || defaultFunctionName, item, localPy), {
+          headers: {
+            Accept: "*/*",
+          },
+          signal,
+        });
+        if (!res.ok) {
+          failed.push(item.filename);
+        } else {
+          const blob = await res.blob();
+          folder.file(item.filename, blob);
+        }
+      } catch (itemErr) {
+        if (itemErr instanceof Error && (itemErr.name === "AbortError" || itemErr.message === "Download cancelled")) {
+          throw itemErr;
+        }
+        failed.push(item.filename);
+      }
       done += 1;
       onProgress?.(done, items.length, item.filename);
     }
+
+    const succeeded = items.length - failed.length;
+    if (succeeded === 0) {
+      throw new Error(`All ${items.length} files failed to download. They may be unavailable or restricted.`);
+    }
+
     const zipBlob = await zip.generateAsync({ type: "blob" });
     const objectUrl = URL.createObjectURL(zipBlob);
     const a = document.createElement("a");
@@ -968,6 +985,11 @@ export const downloadMixedZip = async (
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     toast.dismiss(id);
+
+    const successMsg = failed.length > 0
+      ? `${succeeded} of ${items.length} files saved — ${failed.length} skipped (unavailable)`
+      : "File saved to Downloads folder";
+
     toast.success(
       React.createElement(
         "div",
@@ -978,7 +1000,7 @@ export const downloadMixedZip = async (
           React.createElement(
             "span",
             { className: "font-semibold text-foreground text-sm" },
-            "File saved to Downloads folder"
+            successMsg
           ),
           React.createElement(
             "span",
