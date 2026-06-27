@@ -297,6 +297,13 @@ export const MediaDownloaderPage = ({
   };
 
   const buildFilename = (item: MediaItem, download: MediaDownload, itemIndex: number) => {
+    // MediaFire (and similar direct-file platforms) already provide the correct
+    // filename in download.filename — use it as-is instead of applying the
+    // social-media pattern which would produce "mediafire - Direct Download.pdf".
+    if (platform === "mediafire" && download.filename) {
+      return download.filename;
+    }
+
     const titleLower = (item.title || "").toLowerCase();
     const isGenericTitle =
       !item.title ||
@@ -343,7 +350,10 @@ export const MediaDownloaderPage = ({
       finalFilename = ext ? `${base} (Preview).${ext}` : `${finalFilename} (Preview)`;
     }
 
-    const quality = download.quality ? `${download.quality}p` : "";
+    // Only append "p" for purely numeric quality values (e.g. "1080" → "1080p").
+    // Text labels like "Direct Download" or "Download MP3" must not get a "p" suffix.
+    const rawQuality = download.quality ?? "";
+    const quality = /^\d+$/.test(rawQuality) ? `${rawQuality}p` : rawQuality;
     const isAudio = download.label.toLowerCase().includes("audio");
     if (!quality || isAudio || finalFilename.toLowerCase().includes(quality.toLowerCase())) {
       return finalFilename;
