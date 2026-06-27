@@ -315,8 +315,16 @@ export const MediaDownloaderPage = ({
       titleLower.startsWith("video") ||
       titleLower.startsWith("download");
 
+    // For audio tracks, item.description holds the artist name (e.g. "Offset, Metro Boomin").
+    // Prefer that over the collection/channel owner so the pattern
+    // "{username} - {title}" yields "Artist - Song" instead of "playlistOwner - Song".
+    const usernameToken =
+      item.type === "audio" && item.description
+        ? item.description
+        : (result?.username ?? result?.authorName ?? platform);
+
     const filename = applyPattern(pattern || DEFAULT_PATTERN, {
-      username: result?.username ?? result?.authorName ?? platform,
+      username: usernameToken,
       type: item.type,
       index: itemIndex + 1,
       total: result?.items.length,
