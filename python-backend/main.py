@@ -2291,6 +2291,143 @@ async def spotify_download(
     )
 
 
+# --- Jamendo Free Music Search ---
+
+@app.post("/jamendo/search")
+async def jamendo_search(data: dict):
+    """Search Jamendo for CC-licensed free music tracks."""
+    import urllib.request, ssl, json as _json
+    query = (data.get("query") or "").strip()
+    limit = min(int(data.get("limit", 20)), 50)
+    if not query:
+        raise HTTPException(status_code=400, detail="Missing search query")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    params = urllib.parse.urlencode({
+        "client_id": "b6747d04",
+        "format": "json",
+        "limit": limit,
+        "search": query,
+        "audioformat": "mp31",
+        "include": "musicinfo",
+        "order": "relevance",
+    })
+    url = f"https://api.jamendo.com/v3.0/tracks/?{params}"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            result = _json.loads(resp.read().decode())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Jamendo API error: {e}")
+
+    tracks = []
+    for t in result.get("results", []):
+        download_url = t.get("audiodownload") or t.get("audio") or ""
+        tracks.append({
+            "id": str(t.get("id", "")),
+            "title": t.get("name", ""),
+            "artist": t.get("artist_name", ""),
+            "album": t.get("album_name", ""),
+            "cover": t.get("image", ""),
+            "audio": t.get("audio", ""),
+            "download_url": download_url,
+            "duration": int(t.get("duration", 0)),
+            "license": t.get("license_ccurl", ""),
+        })
+
+    return {"tracks": tracks, "total": len(tracks)}
+
+
+# --- Podcast RSS Downloader ---
+
+@app.post("/podcast/info")
+async def podcast_info(data: dict):
+    """Parse a podcast RSS feed and return episode list with audio URLs."""
+    import urllib.request, ssl
+    from xml.etree import ElementTree as ET
+
+    url = (data.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing RSS URL")
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; PodcastFetcher/1.0)",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        })
+        with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+            xml_data = resp.read()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch RSS feed: {e}")
+
+    try:
+        root = ET.fromstring(xml_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid RSS XML: {e}")
+
+    ns = {"itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd"}
+    channel = root.find("channel")
+    if channel is None:
+        raise HTTPException(status_code=400, detail="No channel element found in feed")
+
+    pod_title = channel.findtext("title") or ""
+    pod_desc = (channel.findtext("description") or "")[:300]
+
+    # Cover image
+    image_url = ""
+    img_el = channel.find("image")
+    if img_el is not None:
+        image_url = img_el.findtext("url") or ""
+    if not image_url:
+        itunes_img = channel.find("itunes:image", ns)
+        if itunes_img is not None:
+            image_url = itunes_img.get("href", "")
+
+    episodes = []
+    for item in channel.findall("item")[:50]:
+        ep_title = item.findtext("title") or ""
+        ep_desc = (item.findtext("description") or "")[:250]
+        pub_date = item.findtext("pubDate") or ""
+
+        # Audio enclosure
+        enclosure = item.find("enclosure")
+        audio_url = ""
+        if enclosure is not None:
+            audio_url = enclosure.get("url", "")
+
+        # Duration from itunes
+        duration = ""
+        dur_el = item.find("itunes:duration", ns)
+        if dur_el is not None and dur_el.text:
+            duration = dur_el.text.strip()
+
+        if audio_url:
+            episodes.append({
+                "title": ep_title,
+                "description": ep_desc,
+                "date": pub_date,
+                "audio_url": audio_url,
+                "duration": duration,
+                "filename": safe_filename(ep_title) + ".mp3",
+            })
+
+    return {
+        "title": pod_title,
+        "description": pod_desc,
+        "image": image_url,
+        "episodes": episodes,
+        "episode_count": len(episodes),
+    }
+
+
 # Serve static files and React single-page app if build directory exists
 from fastapi.staticfiles import StaticFiles
 
@@ -2309,7 +2446,7 @@ if os.path.exists(dist_dir):
     @app.get("/{file_path:path}")
     async def serve_spa(file_path: str):
         # Never shadow API endpoints
-        if file_path.startswith(("health", "remove-video-bg", "video-progress", "video-download", "youtube", "mediafire", "spotify")):
+        if file_path.startswith(("health", "remove-video-bg", "video-progress", "video-download", "youtube", "mediafire", "spotify", "jamendo", "podcast")):
             raise HTTPException(status_code=404, detail="Not found")
 
         # Serve exact public files if they exist (favicon.ico, robots.txt, manifest.json …)
