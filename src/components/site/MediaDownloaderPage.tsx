@@ -478,7 +478,7 @@ export const MediaDownloaderPage = ({
           functionName: entry.download.functionName,
           ...downloadProxyOptionsFromMedia(entry.download),
         })),
-        `${result?.username ?? result?.authorName ?? platform}-${result?.sourceType ?? "media"}`,
+        `${result?.title ?? result?.username ?? result?.authorName ?? platform}`,
         functionName,
         (done, _total, current) => {
           setQueue((prev) =>
