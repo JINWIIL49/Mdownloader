@@ -38,3 +38,7 @@ packages = ["ffmpeg-full", "freetype", "lcms2", "libGL", "libGLU", "libimagequan
 
 [deployment]
 deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
