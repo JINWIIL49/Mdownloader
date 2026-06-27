@@ -339,9 +339,10 @@ export const MediaDownloaderPage = ({
       title: (isGenericTitle ? result?.title : item.title) || result?.title || "media",
     });
 
+    const qualityStr = download.quality != null ? String(download.quality) : "";
     const isPreview =
       download.label.toLowerCase().includes("preview") ||
-      (download.quality && download.quality.toLowerCase().includes("preview")) ||
+      qualityStr.toLowerCase().includes("preview") ||
       download.filename.toLowerCase().includes("preview");
 
     let finalFilename = filename;
@@ -352,8 +353,7 @@ export const MediaDownloaderPage = ({
 
     // Only append "p" for purely numeric quality values (e.g. "1080" → "1080p").
     // Text labels like "Direct Download" or "Download MP3" must not get a "p" suffix.
-    const rawQuality = download.quality ?? "";
-    const quality = /^\d+$/.test(rawQuality) ? `${rawQuality}p` : rawQuality;
+    const quality = /^\d+$/.test(qualityStr) ? `${qualityStr}p` : qualityStr;
     const isAudio = download.label.toLowerCase().includes("audio");
     if (!quality || isAudio || finalFilename.toLowerCase().includes(quality.toLowerCase())) {
       return finalFilename;
