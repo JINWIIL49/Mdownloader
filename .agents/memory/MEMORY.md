@@ -1,3 +1,4 @@
 - [Spotify API access in Replit](spotify-api-replit.md) — `open.spotify.com/get_access_token` returns 403 (blocked); use oEmbed + embed page scraping instead
 - [Spotify download flow](spotify-download-flow.md) — oEmbed for title/thumb, embed page for artists, yt-dlp YouTube search, davidcyriltech ytmp3 for download
 - [TanStack Start SSR → plain Vite SPA fix](tanstack-start-ssr-fix.md) — app was imported with TanStack Start SSR causing blank screen; fixed by switching to plain Vite SPA
+- [yt-dlp YouTube player clients](ytdlp-youtube-clients.md) — android_vr/android_creator work without PO tokens; ios/mweb broken since mid-2025

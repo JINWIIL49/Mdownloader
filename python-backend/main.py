@@ -560,21 +560,26 @@ async def youtube_info(data: dict):
     is_playlist = ("list=" in url or "/playlist?" in url) and mode not in ("video", "short", "audio")
 
     try:
-        # Best-effort anti-bot yt-dlp options shared by all YouTube extractions.
-        # ios + mweb + tv_embedded: three separate YouTube player clients.
-        # tv_embedded bypasses age-gating; ios bypasses most bot checks;
-        # mweb is the mobile web fallback that rarely gets blocked.
-        _yt_extractor_args = {'youtube': {'player_client': ['ios', 'mweb', 'tv_embedded']}}
+        # Anti-bot yt-dlp options for YouTube.
+        # android_vr + android_creator: these clients work without PO tokens and
+        # provide full quality (up to 4K). ios/mweb now require GVS PO tokens
+        # and are skipped. android is the plain fallback for restricted videos.
+        # player_skip=webpage avoids the JS challenge page entirely.
+        _yt_extractor_args = {
+            'youtube': {
+                'player_client': ['android_vr', 'android_creator', 'android'],
+                'player_skip': ['webpage'],
+            }
+        }
         _common_ydl = {
             'quiet': True,
             'no_warnings': True,
-            'socket_timeout': 15,
+            'socket_timeout': 20,
             'nocheckcertificate': True,
             'extractor_args': _yt_extractor_args,
             'http_headers': {
                 'User-Agent': (
-                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+                    'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
                 ),
                 'Accept-Language': 'en-US,en;q=0.9',
             },
@@ -1053,17 +1058,12 @@ async def youtube_download(
             # Human-like randomised sleep between requests (1–4 s) — avoids 429s.
             "--sleep-interval", "1",
             "--max-sleep-interval", "4",
-            "--js-runtimes", "deno",
-            "--js-runtimes", "node",
-            # Three player clients in priority order:
-            # ios   — bypasses most bot checks (mobile device auth, no JS challenge)
-            # mweb  — mobile-web fallback, rarely blocked
-            # tv_embedded — bypasses age-gating without cookies
-            "--extractor-args", "youtube:player_client=ios,mweb,tv_embedded",
-            # Spoof a real iOS Safari UA so YouTube serves the ios client properly
+            # android_vr and android_creator work without GVS PO tokens and
+            # provide full 4K/1080p/720p quality. player_skip=webpage avoids JS challenge.
+            "--extractor-args", "youtube:player_client=android_vr,android_creator,android;player_skip=webpage",
+            # Android YouTube app UA — matches android_vr/android_creator clients
             "--user-agent",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
             "--add-header", "Accept-Language:en-US,en;q=0.9",
         ]
 
