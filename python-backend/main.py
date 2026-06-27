@@ -1625,6 +1625,54 @@ def _extract_cover_url(images):
     sorted_imgs = sorted(images, key=lambda x: x.get("maxWidth", x.get("width", 0)), reverse=True)
     return sorted_imgs[0].get("url")
 
+
+def _extract_artists_str(artists_data) -> str:
+    """Extract a comma-joined artist string from Spotify embed data.
+
+    Handles both:
+    - Old Web API format:  [{"name": "Artist"}]
+    - New embed format:    {"items": [{"profile": {"name": "Artist"}}]}
+    """
+    if not artists_data:
+        return ""
+    items = artists_data.get("items", artists_data) if isinstance(artists_data, dict) else artists_data
+    if not isinstance(items, list):
+        return ""
+    names = []
+    for a in items:
+        name = (a.get("profile") or {}).get("name") or a.get("name") or ""
+        if name:
+            names.append(name)
+    return ", ".join(names)
+
+
+def _extract_track_cover(track_data: dict, fallback: str | None) -> str | None:
+    """Extract cover art URL from a Spotify embed track entry.
+
+    Handles both:
+    - New embed format:  albumOfTrack.coverArt.sources[{url,width}]
+    - Old Web API format: album.images[{url,width}]
+    """
+    # New format
+    sources = track_data.get("albumOfTrack", {}).get("coverArt", {}).get("sources", [])
+    if sources:
+        best = max(sources, key=lambda s: s.get("width", 0))
+        url = best.get("url")
+        if url:
+            return url
+    # Old format
+    images = track_data.get("album", {}).get("images", [])
+    return _extract_cover_url(images) or fallback
+
+
+def _extract_track_album_name(track_data: dict, fallback: str) -> str:
+    """Extract album name from a Spotify embed track entry."""
+    return (
+        track_data.get("albumOfTrack", {}).get("name")
+        or track_data.get("album", {}).get("name")
+        or fallback
+    )
+
 def _spotify_get_token() -> str | None:
     """Fetch an anonymous Spotify access token from the web player endpoint."""
     import urllib.request, ssl, json as _json
@@ -1847,10 +1895,9 @@ async def spotify_collection_info(data: dict):
     collection_author = ""
 
     if collection_type == "track":
-        artists_list = entity.get("artists", [])
-        artists = ", ".join(a.get("name") for a in artists_list if a.get("name"))
+        artists = _extract_artists_str(entity.get("artists"))
         tracks_raw = [{
-            "title": entity.get("name", "Track"),
+            "title": entity.get("name") or entity.get("title") or "Track",
             "artists": artists,
             "cover_url": collection_cover,
             "album": collection_title,
@@ -1859,34 +1906,57 @@ async def spotify_collection_info(data: dict):
         collection_author = artists
 
     elif collection_type == "album":
-        artists_list = entity.get("artists", [])
-        collection_author = ", ".join(a.get("name") for a in artists_list if a.get("name"))
-        for t in entity.get("tracks", {}).get("items", []):
-            t_artists = ", ".join(a.get("name") for a in t.get("artists", []) if a.get("name"))
+        collection_author = _extract_artists_str(entity.get("artists"))
+        # Album tracks may be at entity.tracks.items (new) or entity.trackList (alt)
+        album_tracks = entity.get("tracks", {}).get("items", []) or entity.get("trackList", [])
+        for item in album_tracks:
+            t = item.get("track", item)
+            t_artists = _extract_artists_str(t.get("artists")) or collection_author
             tracks_raw.append({
-                "title": t.get("name", "Track"),
-                "artists": t_artists or collection_author,
-                "cover_url": collection_cover,
-                "album": collection_title,
-                "preview_url": t.get("audioPreview", {}).get("url"),
+                "title": t.get("name") or t.get("title") or "Track",
+                "artists": t_artists,
+                "cover_url": _extract_track_cover(t, collection_cover),
+                "album": _extract_track_album_name(t, collection_title),
+                "preview_url": (t.get("audioPreview") or {}).get("url"),
             })
 
     elif collection_type == "playlist":
-        owner = entity.get("owner", {})
-        collection_author = owner.get("displayName") or owner.get("name") or ""
+        # Playlist entity uses "authors" list (not "owner")
+        authors_list = entity.get("authors") or []
+        if isinstance(authors_list, list) and authors_list:
+            collection_author = ", ".join(
+                a.get("name") or a.get("displayName") or ""
+                for a in authors_list if isinstance(a, dict)
+            )
+        else:
+            collection_author = ""
+
         for item in entity.get("trackList", []):
-            t = item.get("track", item)  # playlist items may wrap in 'track' key
-            t_artists_list = t.get("artists", [])
-            t_artists = ", ".join(a.get("name") for a in t_artists_list if a.get("name"))
-            t_images = t.get("album", {}).get("images", []) or []
-            t_cover = _extract_cover_url(t_images) or collection_cover
+            # In the new Spotify embed format, each item IS the track —
+            # keys: uri, uid, title, subtitle, audioPreview, isPlayable, ...
+            # "title" = song name, "subtitle" = artist(s) as a pre-formatted string
+            t = item.get("track", item)  # handle both wrapped and flat
+            if not t or not isinstance(t, dict):
+                continue
+            t_name = t.get("title") or t.get("name") or ""
+            if not t_name:
+                continue
+            # subtitle is a plain string like "Chris Brown,\u00a0Tyga" (Spotify uses non-breaking spaces)
+            raw_subtitle = t.get("subtitle") or ""
+            t_artists = raw_subtitle.replace("\u00a0", " ").replace("\xa0", " ").strip()
+            if not t_artists:
+                t_artists = _extract_artists_str(t.get("artists"))
+            t_cover = _extract_track_cover(t, collection_cover) or collection_cover
+            t_album = _extract_track_album_name(t, collection_title)
+            t_preview = (t.get("audioPreview") or {}).get("url")
             tracks_raw.append({
-                "title": t.get("name", "Track"),
+                "title": t_name,
                 "artists": t_artists,
                 "cover_url": t_cover,
-                "album": t.get("album", {}).get("name", collection_title),
-                "preview_url": t.get("audioPreview", {}).get("url"),
+                "album": t_album,
+                "preview_url": t_preview,
             })
+            print(f"[Spotify] Playlist track: '{t_name}' by '{t_artists}'")
 
     if not tracks_raw:
         raise HTTPException(status_code=404, detail=f"No tracks found in this Spotify {collection_type}.")
