@@ -1,9 +1,12 @@
 services:
   - type: web
-    name: sweet-sync-vault
+    name: mdownloader
     env: docker
     dockerfilePath: Dockerfile
     dockerContext: .
     plan: free
     numInstances: 1
     healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production

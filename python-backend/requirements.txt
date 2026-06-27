@@ -1,11 +1,11 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
-rembg[cpu]>=2.0.68
-opencv-python
+opencv-python-headless
 numpy
 imageio
 imageio-ffmpeg
 yt-dlp[default]
 mutagen
 requests
+Pillow

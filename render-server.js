@@ -1,3 +1,12 @@
+/**
+ * render-server.js
+ *
+ * Production entry point for Render / Heroku / Railway.
+ * - Starts the Python FastAPI backend internally on port 8001
+ * - Proxies all API routes to Python
+ * - Serves the Vite-built React SPA (dist/ or dist/client/) for everything else
+ * - Listens on process.env.PORT (provided by the hosting platform)
+ */
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
@@ -6,145 +15,134 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 1. Start the Python FastAPI backend on port 8001
-const pyPort = '8001';
+// ── Python backend ────────────────────────────────────────────────────────────
+const PY_PORT = '8001';
 let pyBackend = null;
 let isShuttingDown = false;
 
 function startPythonBackend() {
   if (isShuttingDown) return;
-  console.log(`[Proxy] Starting Python Backend on port ${pyPort}...`);
-  const spawnCmd = process.platform === 'win32' ? 'cmd.exe' : 'uvicorn';
-  const spawnArgs = process.platform === 'win32'
-    ? ['/c', 'python -m uvicorn main:app --host 127.0.0.1 --port ' + pyPort]
-    : ['main:app', '--host', '127.0.0.1', '--port', pyPort];
+  console.log(`[Server] Starting Python backend on port ${PY_PORT}…`);
 
-  pyBackend = spawn(spawnCmd, spawnArgs, {
+  pyBackend = spawn('uvicorn', ['main:app', '--host', '127.0.0.1', '--port', PY_PORT], {
     cwd: path.join(__dirname, 'python-backend'),
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: '1'
-    }
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
   });
 
-  pyBackend.stdout.on('data', (data) => {
-    console.log(`[Python] ${data.toString().trim()}`);
-  });
-
-  pyBackend.stderr.on('data', (data) => {
-    console.error(`[Python-Err] ${data.toString().trim()}`);
-  });
-
-  pyBackend.on('error', (err) => {
-    console.error(`[Proxy] Failed to start Python backend:`, err);
-  });
-
+  pyBackend.stdout.on('data', (d) => process.stdout.write(`[Python] ${d}`));
+  pyBackend.stderr.on('data', (d) => process.stderr.write(`[Python] ${d}`));
+  pyBackend.on('error', (err) => console.error('[Server] Failed to start Python:', err));
   pyBackend.on('close', (code) => {
     pyBackend = null;
     if (!isShuttingDown) {
-      console.warn(`[Proxy] Python backend process exited with code ${code}. Restarting in 2 seconds...`);
+      console.warn(`[Server] Python exited (${code}). Restarting in 2 s…`);
       setTimeout(startPythonBackend, 2000);
-    } else {
-      console.log(`[Proxy] Python backend process exited with code ${code} (graceful shutdown).`);
     }
   });
 }
 
 startPythonBackend();
 
-// Graceful shutdown: clean up child process when node exits
-process.on('SIGTERM', () => {
-  isShuttingDown = true;
-  if (pyBackend) {
-    console.log('[Proxy] Node server shutting down. Terminating Python backend...');
-    pyBackend.kill('SIGTERM');
-  }
-});
+['SIGTERM', 'SIGINT'].forEach((sig) =>
+  process.on(sig, () => {
+    isShuttingDown = true;
+    pyBackend?.kill(sig);
+    process.exit(0);
+  })
+);
 
-process.on('SIGINT', () => {
-  isShuttingDown = true;
-  if (pyBackend) {
-    console.log('[Proxy] Node server interrupted. Terminating Python backend...');
-    pyBackend.kill('SIGINT');
-  }
-});
+// ── Static file serving ───────────────────────────────────────────────────────
+// Vite builds to dist/ (plain SPA build)
+const distDir = (() => {
+  const base = path.join(__dirname, 'dist');
+  const client = path.join(base, 'client');
+  return fs.existsSync(client) ? client : base;
+})();
 
-// Import the SSR request handler from api/server.js
-import handler from './api/server.js';
+const MIME = {
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.webp': 'image/webp',
+};
 
-const publicPort = process.env.PORT || '8000';
-const distClientDir = path.join(__dirname, 'dist/client');
+function serveFile(filePath, res) {
+  const ext = path.extname(filePath);
+  res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  fs.createReadStream(filePath).pipe(res);
+}
 
-// 2. Start the unified HTTP server
-const server = http.createServer(async (req, res) => {
+// ── API route prefixes forwarded to Python ────────────────────────────────────
+const API_PREFIXES = [
+  '/health',
+  '/spotify/',
+  '/youtube/',
+  '/mediafire/',
+  '/jamendo/',
+  '/podcast/',
+  '/remove-video-bg',
+  '/video-progress',
+  '/video-download',
+];
+
+function isApiRoute(pathname) {
+  return API_PREFIXES.some(
+    (p) => pathname === p.replace(/\/$/, '') || pathname.startsWith(p)
+  );
+}
+
+// ── HTTP server ───────────────────────────────────────────────────────────────
+const PUBLIC_PORT = process.env.PORT || '8000';
+
+const server = http.createServer((req, res) => {
   const url = req.url || '/';
   const pathname = url.split('?')[0];
 
-  // Route API and healthcheck requests directly to the Python backend
-  if (
-    pathname.startsWith('/health') ||
-    pathname.startsWith('/youtube') ||
-    pathname.startsWith('/remove-video-bg') ||
-    pathname.startsWith('/video-progress') ||
-    pathname.startsWith('/video-download') ||
-    pathname.startsWith('/mediafire') ||
-    pathname.startsWith('/spotify')
-  ) {
-    // Simple streaming proxy to Python backend on port 8001
+  // Forward API calls to Python
+  if (isApiRoute(pathname)) {
     const proxyReq = http.request(
-      {
-        host: '127.0.0.1',
-        port: pyPort,
-        path: req.url,
-        method: req.method,
-        headers: req.headers,
-      },
+      { host: '127.0.0.1', port: PY_PORT, path: req.url, method: req.method, headers: req.headers },
       (proxyRes) => {
         res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
         proxyRes.pipe(res);
       }
     );
-
     req.pipe(proxyReq);
     proxyReq.on('error', (err) => {
-      console.error('[Proxy Error]', err);
-      res.writeHead(502);
+      console.error('[Proxy]', err.message);
+      if (!res.headersSent) res.writeHead(502);
       res.end('Bad Gateway');
     });
     return;
   }
 
-  // Serve static assets from dist/client
-  const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
-  const localFilePath = path.join(distClientDir, safePath);
-
-  if (fs.existsSync(localFilePath) && fs.statSync(localFilePath).isFile()) {
-    // Determine content type
-    let contentType = 'application/octet-stream';
-    if (localFilePath.endsWith('.html')) contentType = 'text/html';
-    else if (localFilePath.endsWith('.css')) contentType = 'text/css';
-    else if (localFilePath.endsWith('.js')) contentType = 'application/javascript';
-    else if (localFilePath.endsWith('.png')) contentType = 'image/png';
-    else if (localFilePath.endsWith('.jpg') || localFilePath.endsWith('.jpeg')) contentType = 'image/jpeg';
-    else if (localFilePath.endsWith('.svg')) contentType = 'image/svg+xml';
-    else if (localFilePath.endsWith('.ico')) contentType = 'image/x-icon';
-    else if (localFilePath.endsWith('.json')) contentType = 'application/json';
-
-    res.writeHead(200, { 'Content-Type': contentType });
-    fs.createReadStream(localFilePath).pipe(res);
-    return;
+  // Serve static files from dist/
+  const safe = path.normalize(pathname).replace(/^(\.\.[/\\])+/, '');
+  const local = path.join(distDir, safe);
+  if (safe && fs.existsSync(local) && fs.statSync(local).isFile()) {
+    return serveFile(local, res);
   }
 
-  // Fallback to the TanStack Start SSR request handler
-  try {
-    await handler(req, res);
-  } catch (err) {
-    console.error('[SSR Handler Error]', err);
-    res.writeHead(500);
-    res.end('SSR Server Error');
+  // SPA fallback — serve index.html for all client-side routes
+  const index = path.join(distDir, 'index.html');
+  if (fs.existsSync(index)) {
+    return serveFile(index, res);
   }
+
+  res.writeHead(404);
+  res.end('Not found');
 });
 
-server.listen(publicPort, '0.0.0.0', () => {
-  console.log(`[Proxy] Server listening on port ${publicPort}`);
+server.listen(Number(PUBLIC_PORT), '0.0.0.0', () => {
+  console.log(`[Server] Listening on port ${PUBLIC_PORT}`);
 });

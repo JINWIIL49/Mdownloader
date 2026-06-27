@@ -4,16 +4,14 @@
 FROM node:20-slim AS frontend-builder
 WORKDIR /app
 
-# Install dependencies
-COPY package.json package-lock.json ./
-RUN npm install
+COPY package.json package-lock.json* ./
+RUN npm install --legacy-peer-deps
 
-# Copy frontend source and build
 COPY . .
-RUN npx vite build
+RUN npm run build
 
 # ==========================================
-# Stage 2: Build and run the Unified Python Backend + Node SSR Server
+# Stage 2: Unified Python backend + Node proxy
 # ==========================================
 FROM python:3.11-slim
 WORKDIR /app
@@ -21,7 +19,8 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies (ffmpeg, openCV library support, Node.js + npm, and curl + unzip for Deno)
+# System deps: ffmpeg for media merging, libsm6/libxext6/libgl1/libglib2.0-0 for OpenCV,
+# nodejs for the Node proxy server, curl+unzip for Deno
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsm6 \
@@ -32,37 +31,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     curl \
     unzip \
-    && apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Deno (required by yt-dlp for JS signature/n-challenge solving since 2025)
+# Install Deno (required by yt-dlp for JS challenge solving since 2025)
 RUN curl -fsSL https://deno.land/install.sh | sh && \
     mv /root/.deno/bin/deno /usr/local/bin/deno && \
     rm -rf /root/.deno
 
-# Install python requirements
+# Python dependencies
 COPY python-backend/requirements.txt ./python-backend/requirements.txt
 RUN pip install --no-cache-dir -r python-backend/requirements.txt
 
-# Pre-install EJS challenge solver scripts so they don't need to be downloaded at runtime.
-# By passing a dummy youtube URL and a custom cache directory, yt-dlp will download the solver
-# from github and cache it under /app/.cache/yt-dlp/challenge-solver/lib.json.
-RUN python3 -m yt_dlp --cache-dir /app/.cache/yt-dlp --js-runtimes node --remote-components ejs:github --check-formats https://www.youtube.com/watch?v=dQw4w9WgXcQ || true
+# Pre-cache yt-dlp EJS challenge solver (avoids first-run downloads at runtime)
+RUN python3 -m yt_dlp --cache-dir /app/.cache/yt-dlp \
+    --js-runtimes node \
+    --remote-components ejs:github \
+    --check-formats "https://www.youtube.com/watch?v=dQw4w9WgXcQ" || true
 
-# Copy node_modules and built dist folder from Stage 1
-COPY --from=frontend-builder /app/node_modules ./node_modules
+# Copy built frontend from Stage 1
 COPY --from=frontend-builder /app/dist ./dist
 
-# Copy api folder, proxy server, and package.json
-COPY api ./api
+# Copy Node proxy entry point and package.json (for ESM type declaration)
 COPY render-server.js ./render-server.js
 COPY package.json ./package.json
 
-# Copy python-backend code
+# Copy Python backend
 COPY python-backend/ ./python-backend/
 
-# Ensure all directories and files under /app are writable by any non-root runner user (e.g. on Render)
+# Writable temp dir for downloads
 RUN chmod -R 777 /app
 
-# Render passes the PORT env var automatically (defaults to 10000)
+# Render / Heroku / Railway provide $PORT at runtime (default 10000 on Render free tier)
 CMD ["node", "render-server.js"]

@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node start-dev.js",
-    "build": "vite build && node update-wrangler.js",
-    "vercel-build": "vite build && node update-wrangler.js",
+    "build": "vite build",
+    "vercel-build": "vite build",
     "preview": "vite preview",
     "lint": "eslint ."
   },
