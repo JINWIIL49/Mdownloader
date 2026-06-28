@@ -560,23 +560,25 @@ async def youtube_info(data: dict):
     is_playlist = ("list=" in url or "/playlist?" in url) and mode not in ("video", "short", "audio")
 
     try:
-        # Anti-bot yt-dlp options for YouTube.
-        # android_vr + android_creator: these clients work without PO tokens and
-        # provide full quality (up to 4K). ios/mweb now require GVS PO tokens
-        # and are skipped. android is the plain fallback for restricted videos.
-        # player_skip=webpage avoids the JS challenge page entirely.
-        _yt_extractor_args = {
-            'youtube': {
-                'player_client': ['android_vr', 'android_creator', 'android'],
-                'player_skip': ['webpage'],
-            }
-        }
-        _common_ydl = {
+        # Two yt-dlp configs tried in order for single-video info extraction.
+        #
+        # Config 1 (primary): tv_embedded bypasses YouTube's PO Token requirement
+        # via YouTube's own TV-embed mechanism. android_vr/android_creator are also
+        # included as fallbacks within yt-dlp's client cycling. No player_skip means
+        # yt-dlp can read the full DASH manifest, giving 4K / 1080p / 720p streams.
+        #
+        # Config 2 (bot-bypass fallback): if Config 1 triggers "Sign in to confirm
+        # you're not a bot", android_vr + player_skip=webpage sidesteps the JS
+        # challenge. Returns at least a 360p progressive stream for all videos.
+        _EXTRACTOR_CONFIGS = [
+            {'player_client': ['tv_embedded', 'android_vr', 'android_creator', 'android']},
+            {'player_client': ['android_vr', 'android_creator', 'android'], 'player_skip': ['webpage']},
+        ]
+        _BASE_YDL = {
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 20,
             'nocheckcertificate': True,
-            'extractor_args': _yt_extractor_args,
             'http_headers': {
                 'User-Agent': (
                     'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
@@ -584,6 +586,8 @@ async def youtube_info(data: dict):
                 'Accept-Language': 'en-US,en;q=0.9',
             },
         }
+        # _common_ydl used by the playlist branch below — use primary config there too
+        _common_ydl = {**_BASE_YDL, 'extractor_args': {'youtube': _EXTRACTOR_CONFIGS[0]}}
 
         if is_playlist and mode not in ("video", "short"):
             # Playlist Mode — use web client for extract_flat (browse API).
@@ -705,16 +709,34 @@ async def youtube_info(data: dict):
                 raise HTTPException(status_code=400, detail="Could not parse YouTube video ID")
 
             video_url = f"https://www.youtube.com/watch?v={video_id}"
-            ydl_opts = dict(_common_ydl)
             is_cloud = "RENDER" in os.environ or "RAILWAY_STATIC_URL" in os.environ or os.path.exists("/.dockerenv")
-            if is_cloud:
-                cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
-                ydl_opts.update({
-                    'remote_components': ['ejs:github'],
-                    'cache_dir': cache_dir,
-                })
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
+
+            # Sequential fallback: try each extractor config until one succeeds.
+            # Config 1 (tv_embedded, no player_skip) → full DASH quality list.
+            # Config 2 (android_vr + player_skip) → reliable bot-bypass fallback.
+            info = None
+            last_info_err = None
+            for _cfg in _EXTRACTOR_CONFIGS:
+                _ydl_opts = {
+                    **_BASE_YDL,
+                    'extractor_args': {'youtube': _cfg},
+                }
+                if is_cloud:
+                    cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
+                    _ydl_opts['remote_components'] = ['ejs:github']
+                    _ydl_opts['cache_dir'] = cache_dir
+                try:
+                    with yt_dlp.YoutubeDL(_ydl_opts) as ydl:
+                        info = ydl.extract_info(video_url, download=False)
+                    break  # success — stop trying
+                except Exception as _e:
+                    _es = str(_e)
+                    if any(k in _es for k in ('Sign in', 'bot', 'cookies', 'confirm your age')):
+                        last_info_err = _e
+                        continue  # bot-detected — try next config
+                    raise  # any other error propagates immediately
+            if info is None:
+                raise last_info_err
                 
             title = info.get("title", "YouTube Video")
             author_name = info.get("uploader", "Unknown")
@@ -1131,28 +1153,36 @@ async def youtube_download(
         # Check if we are running in the production cloud container (e.g. Render, Railway)
         is_cloud = "RENDER" in os.environ or "RAILWAY_STATIC_URL" in os.environ or os.path.exists("/.dockerenv")
 
-        # Spawn yt-dlp as a subprocess with parallel fragments enabled
-        # --newline forces yt-dlp to emit \n after every progress line (default is \r)
-        # Without this, readline() blocks forever because it waits for \n
-        # Pass -u to Python to unbuffer stdout/stderr of yt-dlp for real-time progress parsing
-        yt_args = [
-            sys.executable, "-u", "-m", "yt_dlp",
-            "-f", format_selector,
-            "--ffmpeg-location", ffmpeg_exe,
-            "--no-check-certificate",
-            "--newline",
-            "--no-colors",
-            "--retries", "3",
-            "--fragment-retries", "3",
-            # android_vr/android_creator work without PO tokens for most videos.
-            # ios and web are included as fallbacks for videos where YouTube
-            # has enabled SABR-only streaming (android clients return no URL).
-            "--extractor-args", "youtube:player_client=android_vr,android_creator,android,ios,web;player_skip=webpage",
-            # Android YouTube app UA — matches android_vr/android_creator clients
-            "--user-agent",
-            "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
-            "--add-header", "Accept-Language:en-US,en;q=0.9",
+        # Two extractor-args strings tried in order for downloads.
+        # Primary: tv_embedded (bypasses PO Token via YouTube TV embed) + android clients
+        #   → gets full DASH quality (4K/1080p/720p) for most videos, no player_skip needed.
+        # Fallback: android_vr + player_skip=webpage
+        #   → reliable bot-bypass; returns at least 360p for all videos.
+        _DL_EXTRACTOR_ARGS = [
+            "youtube:player_client=tv_embedded,android_vr,android_creator,android",
+            "youtube:player_client=android_vr,android_creator,android;player_skip=webpage",
         ]
+
+        def _build_yt_args(extractor_args_str):
+            args = [
+                sys.executable, "-u", "-m", "yt_dlp",
+                "-f", format_selector,
+                "--ffmpeg-location", ffmpeg_exe,
+                "--no-check-certificate",
+                "--newline",
+                "--no-colors",
+                "--retries", "3",
+                "--fragment-retries", "3",
+                "--extractor-args", extractor_args_str,
+                "--user-agent",
+                "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+                "--add-header", "Accept-Language:en-US,en;q=0.9",
+            ]
+            return args
+
+        # Start with primary config; will switch to fallback if bot-detected
+        _dl_cfg_idx = 0
+        yt_args = _build_yt_args(_DL_EXTRACTOR_ARGS[_dl_cfg_idx])
 
         if is_cloud:
             cache_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache", "yt-dlp"))
@@ -1172,176 +1202,192 @@ async def youtube_download(
         if not is_live_format:
             yt_args[6:6] = ["--concurrent-fragments", "4"]
 
-        print(f"[Stream] Spawning yt-dlp: {' '.join(yt_args)}")
+        async def _run_yt_dlp(args):
+            """Spawn yt-dlp and read output, returning (returncode, bot_detected, output_lines)."""
+            nonlocal proc
+            print(f"[Stream] Spawning yt-dlp: {' '.join(args)}")
+            _proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            proc = _proc
+            active_procs[filename] = _proc
 
-        proc = await asyncio.create_subprocess_exec(
-            *yt_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
+            _video_total = 0
+            _video_downloaded = 0
+            _audio_total = 0
+            _audio_downloaded = 0
+            _current_dest = 0
+            _dual = "+" in format_selector
+            _line_buf = ""
+            _bot_detected = False
+            _collected = []
 
-        # Register so Cancel button can kill it
-        active_procs[filename] = proc
-        # Start at 2% so user sees something immediately
-        yt_progress[progress_key] = {"progress": 2, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
+            while True:
+                if await request.is_disconnected():
+                    print("[Stream] Client disconnected — killing yt-dlp")
+                    try:
+                        _proc.kill()
+                    except Exception:
+                        pass
+                    for f in os.listdir(temp_dir):
+                        if f.startswith(unique_id):
+                            try:
+                                os.remove(os.path.join(temp_dir, f))
+                            except Exception:
+                                pass
+                    yt_progress.pop(progress_key, None)
+                    from fastapi import Response as _Resp
+                    raise _Resp("Cancelled", status_code=499)  # type: ignore
 
-        video_total = 0
-        video_downloaded = 0
-        audio_total = 0
-        audio_downloaded = 0
-        current_dest = 0  # 0 = video / first stream, 1 = audio / second stream
-        is_dual_stream = "+" in format_selector
-        # Buffer for partial lines (handles \r-terminated lines with no \n)
-        line_buf = ""
-
-        # Read output in small chunks so we don't block on readline()
-        # yt-dlp progress lines end with \r (overwrite) even with --newline
-        # Reading raw chunks + splitting on both \r and \n handles all cases
-        while True:
-            if await request.is_disconnected():
-                print("[Stream] Client disconnected during download — killing yt-dlp")
                 try:
-                    proc.kill()
-                except Exception:
-                    pass
-                # Cleanup temp files starting with unique_id
-                for f in os.listdir(temp_dir):
-                    if f.startswith(unique_id):
-                        try:
-                            os.remove(os.path.join(temp_dir, f))
-                        except Exception:
-                            pass
-                yt_progress.pop(progress_key, None)
-                from fastapi import Response
-                return Response("Cancelled", status_code=499)
-
-            try:
-                raw = await asyncio.wait_for(proc.stdout.read(4096), timeout=0.5)
-            except asyncio.TimeoutError:
-                # No data yet — check if process finished
-                if proc.returncode is not None:
-                    break
-                continue
-
-            if not raw:
-                break
-
-            # Decode and add to buffer, then split on \r or \n
-            line_buf += raw.decode("utf-8", errors="replace")
-            # Split on both CR and LF
-            parts = re.split(r'[\r\n]+', line_buf)
-            # Last element may be incomplete — keep in buffer
-            line_buf = parts[-1]
-            lines = parts[:-1]
-
-            for line in lines:
-                line = line.strip()
-                if not line:
+                    raw = await asyncio.wait_for(_proc.stdout.read(4096), timeout=0.5)
+                except asyncio.TimeoutError:
+                    if _proc.returncode is not None:
+                        break
                     continue
 
-                # Safe-print: strip any char the console can't render
-                try:
-                    print(f"[yt-dlp] {line}")
-                except UnicodeEncodeError:
-                    print(f"[yt-dlp] {line.encode('ascii', errors='replace').decode('ascii')}")
+                if not raw:
+                    break
 
-                if "[download] Destination:" in line:
-                    if current_dest == 0 and (video_total > 0 or video_downloaded > 0):
-                        current_dest = 1
+                _line_buf += raw.decode("utf-8", errors="replace")
+                parts = re.split(r'[\r\n]+', _line_buf)
+                _line_buf = parts[-1]
+                lines = parts[:-1]
 
-                # Match: [download]  12.3% of  ~3.48GiB  or  [download] 100% of 512.00MiB
-                m = re.search(
-                    r'\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(?:~\s*)?(\d+(?:\.\d+)?)\s*([kKmMgGtT]?i?[Bb])',
-                    line
-                )
-                if m:
-                    pct = float(m.group(1))
-                    size_val = float(m.group(2))
-                    size_unit = m.group(3).lower()
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    _collected.append(line)
 
-                    mult = 1
-                    if 'k' in size_unit:
-                        mult = 1024
-                    elif 'm' in size_unit:
-                        mult = 1024 * 1024
-                    elif 'g' in size_unit:
-                        mult = 1024 * 1024 * 1024
-                    elif 't' in size_unit:
-                        mult = 1024 * 1024 * 1024 * 1024
+                    try:
+                        print(f"[yt-dlp] {line}")
+                    except UnicodeEncodeError:
+                        print(f"[yt-dlp] {line.encode('ascii', errors='replace').decode('ascii')}")
 
-                    total_bytes = int(size_val * mult)
-                    downloaded_bytes = int(total_bytes * (pct / 100.0))
+                    # Detect bot-challenge — kill early so we can retry with fallback config
+                    if not _bot_detected and any(k in line for k in ('Sign in to confirm', 'not a bot', 'cookies')):
+                        _bot_detected = True
+                        try:
+                            _proc.kill()
+                        except Exception:
+                            pass
+                        break
 
-                    # Parse download speed: "at 5.23MiB/s" or "at 523.12KiB/s"
-                    speed_bytes = 0
-                    m_spd = re.search(r'at\s+(\d+(?:\.\d+)?)\s*([KkMmGg]i?[Bb])\/s', line)
-                    if m_spd:
-                        spd_val = float(m_spd.group(1))
-                        spd_unit = m_spd.group(2).lower()
-                        spd_mult = 1024 if 'k' in spd_unit else (1024 * 1024 if 'm' in spd_unit else 1024 * 1024 * 1024)
-                        speed_bytes = int(spd_val * spd_mult)
+                    if "[download] Destination:" in line:
+                        if _current_dest == 0 and (_video_total > 0 or _video_downloaded > 0):
+                            _current_dest = 1
 
-                    if is_dual_stream:
-                        if current_dest == 0:
-                            video_total = total_bytes
-                            video_downloaded = downloaded_bytes
-                            # Video download: map pct 0-100 → overall 5-85
-                            overall_pct = 5 + int(pct * 0.8)
-                        else:
-                            audio_total = total_bytes
-                            audio_downloaded = downloaded_bytes
-                            # Audio download: map pct 0-100 → overall 85-95
-                            overall_pct = 85 + int(pct * 0.10)
-                    else:
-                        video_total = total_bytes
-                        video_downloaded = downloaded_bytes
-                        # Single stream: map pct 0-100 → overall 5-95
-                        overall_pct = 5 + int(pct * 0.90)
-
-                    yt_progress[progress_key] = {
-                        "progress": min(95, overall_pct),
-                        "downloaded_bytes": video_downloaded + audio_downloaded,
-                        "total_bytes": video_total + audio_total,
-                        "speed": speed_bytes,
-                    }
-                elif "[Merger] Merging formats" in line or "Merging formats" in line:
-                    yt_progress[progress_key] = {
-                        "progress": 98,
-                        "downloaded_bytes": video_downloaded + audio_downloaded,
-                        "total_bytes": video_total + audio_total,
-                    }
-                elif is_live_format:
-                    # Live stream: ffmpeg outputs  size=  9216KiB time=00:01:14.96 speed=0.63x
-                    m_live = re.search(
-                        r'size=\s*(\d+)([KkMmGg]i?[Bb])\s+time=(\d+):(\d+):(\d+(?:\.\d+)?)',
+                    m = re.search(
+                        r'\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(?:~\s*)?(\d+(?:\.\d+)?)\s*([kKmMgGtT]?i?[Bb])',
                         line
                     )
-                    if m_live:
-                        size_num  = int(m_live.group(1))
-                        size_unit = m_live.group(2).lower()
-                        h = int(m_live.group(3))
-                        mn = int(m_live.group(4))
-                        s  = float(m_live.group(5))
-                        total_secs = h * 3600 + mn * 60 + s
-
-                        size_mult = 1024
-                        if 'm' in size_unit:
-                            size_mult = 1024 * 1024
+                    if m:
+                        pct = float(m.group(1))
+                        size_val = float(m.group(2))
+                        size_unit = m.group(3).lower()
+                        mult = 1
+                        if 'k' in size_unit:
+                            mult = 1024
+                        elif 'm' in size_unit:
+                            mult = 1024 * 1024
                         elif 'g' in size_unit:
-                            size_mult = 1024 * 1024 * 1024
-                        live_bytes = size_num * size_mult
-
-                        # Fake pct: 5% per minute, capped at 90 so bar keeps moving
-                        live_pct = max(5, min(90, int(total_secs / 60 * 5)))
+                            mult = 1024 * 1024 * 1024
+                        elif 't' in size_unit:
+                            mult = 1024 * 1024 * 1024 * 1024
+                        total_bytes = int(size_val * mult)
+                        downloaded_bytes = int(total_bytes * (pct / 100.0))
+                        speed_bytes = 0
+                        m_spd = re.search(r'at\s+(\d+(?:\.\d+)?)\s*([KkMmGg]i?[Bb])\/s', line)
+                        if m_spd:
+                            spd_val = float(m_spd.group(1))
+                            spd_unit = m_spd.group(2).lower()
+                            spd_mult = 1024 if 'k' in spd_unit else (1024 * 1024 if 'm' in spd_unit else 1024 * 1024 * 1024)
+                            speed_bytes = int(spd_val * spd_mult)
+                        if _dual:
+                            if _current_dest == 0:
+                                _video_total = total_bytes
+                                _video_downloaded = downloaded_bytes
+                                overall_pct = 5 + int(pct * 0.8)
+                            else:
+                                _audio_total = total_bytes
+                                _audio_downloaded = downloaded_bytes
+                                overall_pct = 85 + int(pct * 0.10)
+                        else:
+                            _video_total = total_bytes
+                            _video_downloaded = downloaded_bytes
+                            overall_pct = 5 + int(pct * 0.90)
                         yt_progress[progress_key] = {
-                            "progress": live_pct,
-                            "downloaded_bytes": live_bytes,
-                            "total_bytes": 0,   # unknown for live streams
+                            "progress": min(95, overall_pct),
+                            "downloaded_bytes": _video_downloaded + _audio_downloaded,
+                            "total_bytes": _video_total + _audio_total,
+                            "speed": speed_bytes,
                         }
+                    elif "[Merger] Merging formats" in line or "Merging formats" in line:
+                        yt_progress[progress_key] = {
+                            "progress": 98,
+                            "downloaded_bytes": _video_downloaded + _audio_downloaded,
+                            "total_bytes": _video_total + _audio_total,
+                        }
+                    elif is_live_format:
+                        m_live = re.search(
+                            r'size=\s*(\d+)([KkMmGg]i?[Bb])\s+time=(\d+):(\d+):(\d+(?:\.\d+)?)',
+                            line
+                        )
+                        if m_live:
+                            size_num  = int(m_live.group(1))
+                            size_unit = m_live.group(2).lower()
+                            h = int(m_live.group(3))
+                            mn = int(m_live.group(4))
+                            s  = float(m_live.group(5))
+                            total_secs = h * 3600 + mn * 60 + s
+                            size_mult = 1024
+                            if 'm' in size_unit:
+                                size_mult = 1024 * 1024
+                            elif 'g' in size_unit:
+                                size_mult = 1024 * 1024 * 1024
+                            live_bytes = size_num * size_mult
+                            live_pct = max(5, min(90, int(total_secs / 60 * 5)))
+                            yt_progress[progress_key] = {
+                                "progress": live_pct,
+                                "downloaded_bytes": live_bytes,
+                                "total_bytes": 0,
+                            }
 
-        code = await proc.wait()
-        if code != 0:
+            _code = await _proc.wait()
+            return _code, _bot_detected, _collected
+
+        # Reset progress before spawning
+        yt_progress[progress_key] = {"progress": 2, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
+
+        code, bot_detected, _ = await _run_yt_dlp(yt_args)
+
+        # If primary config hit bot detection and a fallback is available, retry silently
+        if bot_detected and _dl_cfg_idx + 1 < len(_DL_EXTRACTOR_ARGS):
+            _dl_cfg_idx += 1
+            print(f"[Stream] Bot detected — retrying with fallback extractor config #{_dl_cfg_idx}")
+            yt_progress[progress_key] = {"progress": 2, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
+            # Clean up any partial files from the failed attempt
+            for f in os.listdir(temp_dir):
+                if f.startswith(unique_id):
+                    try:
+                        os.remove(os.path.join(temp_dir, f))
+                    except Exception:
+                        pass
+            fallback_args = _build_yt_args(_DL_EXTRACTOR_ARGS[_dl_cfg_idx])
+            if not is_live_format:
+                fallback_args[6:6] = ["--concurrent-fragments", "4"]
+            if is_cloud:
+                fallback_args.extend(["--cache-dir", cache_dir, "--remote-components", "ejs:github"])
+            fallback_args += cookie_args + ["-o", outtmpl, video_url]
+            code, _, _ = await _run_yt_dlp(fallback_args)
+
+        if code != 0 and not bot_detected:
             raise HTTPException(status_code=500, detail=f"yt-dlp process exited with code {code}")
+        if code != 0:
+            raise HTTPException(status_code=500, detail="YouTube bot detection triggered and all fallback configs failed. Please try again.")
 
         # Locate output file starting with unique_id
         output_file = None
