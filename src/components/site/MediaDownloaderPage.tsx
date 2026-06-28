@@ -261,6 +261,13 @@ export const MediaDownloaderPage = ({
             const errData = await res.json().catch(() => ({}));
             throw new Error((errData as any).detail || `Error ${res.status}`);
           } else {
+            // For youtube-download, the edge function fallback doesn't work in
+            // local/Vite dev mode (returns 404). Surface the backend error directly.
+            if (functionName === "youtube-download") {
+              clientError = true;
+              const errData = await res.json().catch(() => ({}));
+              throw new Error((errData as any).detail || `YouTube info failed (${res.status})`);
+            }
             console.warn(`Local Python backend info failed with status ${res.status}. Falling back to Worker-side resolution.`);
           }
         } catch (e: any) {

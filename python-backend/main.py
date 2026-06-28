@@ -621,7 +621,13 @@ async def youtube_info(data: dict):
                     raise HTTPException(status_code=404, detail="Playlist not found. It may be private, deleted, or the URL is incorrect.")
                 if "HTTP Error 403" in err_str or "private" in err_str.lower():
                     raise HTTPException(status_code=403, detail="This playlist is private or restricted.")
-                raise HTTPException(status_code=500, detail=err_str)
+                if "Unable to recognize tab page" in err_str or "Incomplete yt initial data" in err_str:
+                    raise HTTPException(status_code=500, detail="YouTube couldn't load this playlist right now. Check that it's public and try again in a moment.")
+                if "HTTP Error 400" in err_str or "invalid argument" in err_str.lower():
+                    raise HTTPException(status_code=400, detail="Invalid YouTube playlist URL. Please check the link and try again.")
+                if "Sign in" in err_str or "age" in err_str.lower():
+                    raise HTTPException(status_code=403, detail="This playlist requires sign-in or is age-restricted.")
+                raise HTTPException(status_code=500, detail=f"Could not fetch playlist: {err_str[:200]}")
             
             playlist_title = info.get("title", "YouTube Playlist")
             playlist_author = info.get("uploader") or info.get("author") or None
