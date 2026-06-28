@@ -976,14 +976,20 @@ async def youtube_download(
     # "cannot access local variable before assignment" (Python scoping rule).
     progress_key = filename
 
-    # 1. Try DavidCyrilTech API first to bypass yt-dlp slow download/restrictions
+    # 1. For audio-only downloads, try DavidCyrilTech API as a fast path.
+    #    Video downloads always skip this and go straight to yt-dlp so the
+    #    format_selector (bestvideo[height<=1080] etc.) is properly respected.
+    #    DavidCyrilTech ytmp4 returns the same quality for every request, making
+    #    1080p and 720p downloads identical — which is wrong.
+    is_audio_only = filename.lower().endswith((".m4a", ".mp3", ".webm", ".wav"))
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        is_audio_only = filename.lower().endswith((".m4a", ".mp3", ".webm", ".wav"))
-        api_endpoint = "ytmp3" if is_audio_only else "ytmp4"
+        if not is_audio_only:
+            raise ValueError("video_skip")  # go straight to yt-dlp
+        api_endpoint = "ytmp3"
         yt_url = f"https://www.youtube.com/watch?v={video_id}"
         api_url = f"https://apis.davidcyriltech.my.id/download/{api_endpoint}?url={urllib.parse.quote(yt_url)}"
         print(f"[Stream] Trying DavidCyrilTech API: {api_url}")
@@ -1071,8 +1077,9 @@ async def youtube_download(
                 print(f"[Stream] Streaming from DavidCyrilTech API link")
                 return StreamingResponse(file_sender(), headers=headers_response)
     except Exception as api_err:
-        print(f"[Stream] DavidCyrilTech API failed: {api_err}. Falling back to yt-dlp.")
-        
+        if str(api_err) != "video_skip":
+            print(f"[Stream] DavidCyrilTech API failed: {api_err}. Falling back to yt-dlp.")
+
     format_selector = ":".join(parts[2:])
     format_selector = urllib.parse.unquote(format_selector)
 
