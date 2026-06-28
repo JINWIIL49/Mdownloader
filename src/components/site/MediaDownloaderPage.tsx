@@ -336,8 +336,21 @@ export const MediaDownloaderPage = ({
     // For audio tracks, item.description holds the artist name (e.g. "Offset, Metro Boomin").
     // Prefer that over the collection/channel owner so the pattern
     // "{username} - {title}" yields "Artist - Song" instead of "playlistOwner - Song".
+    // But skip it when the description is just a generic quality label like "Full MP3 Audio".
+    const GENERIC_DESCRIPTIONS = [
+      "audio", "video", "image", "link", "media", "thumbnail", "download",
+      "full mp3 audio", "30s track preview",
+    ];
+    const descLower = (item.description || "").toLowerCase();
+    const isGenericDescription =
+      !item.description ||
+      GENERIC_DESCRIPTIONS.includes(descLower) ||
+      descLower.startsWith("audio") ||
+      descLower.startsWith("video") ||
+      descLower.startsWith("download");
+
     const usernameToken =
-      item.type === "audio" && item.description
+      item.type === "audio" && item.description && !isGenericDescription
         ? item.description
         : (result?.username ?? result?.authorName ?? platform);
 

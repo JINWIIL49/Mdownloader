@@ -3,9 +3,14 @@ import { Film, List, Music, PlaySquare } from "lucide-react";
   import { MediaDownloaderPage, type DownloaderMode } from "@/components/site/MediaDownloaderPage";
   import { History } from "@/components/site/History";
 
-  const matchesYouTube = (value: string) =>
-    /https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(value) ||
-    /(?:v=|v\/|vi\/|youtu\.be\/|embed\/|shorts\/|live\/)[\w-]{11}/.test(value);
+  const matchesYouTube = (value: string) => {
+    // Pure playlist URLs (no video ID) must only match the playlist mode
+    if (/youtube\.com\/playlist\?/i.test(value)) return false;
+    return (
+      /https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\//i.test(value) ||
+      /(?:v=|v\/|vi\/|youtu\.be\/|embed\/|shorts\/|live\/)[\w-]{11}/.test(value)
+    );
+  };
 
   const matchesPlaylist = (value: string) =>
     /(?:https?:\/\/)?(?:www\.)?youtube\.com\/(?:playlist\?(?:.*&)?list=|watch\?(?:.*&)?list=)[\w-]+/i.test(value);
