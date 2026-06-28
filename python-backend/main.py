@@ -958,6 +958,11 @@ async def youtube_download(
         
     video_id = parts[1]
 
+    # progress_key must be defined BEFORE the DavidCyrilTech try block so that
+    # references inside the nested file_sender() closure don't trigger
+    # "cannot access local variable before assignment" (Python scoping rule).
+    progress_key = filename
+
     # 1. Try DavidCyrilTech API first to bypass yt-dlp slow download/restrictions
     try:
         ctx = ssl.create_default_context()
@@ -1056,9 +1061,8 @@ async def youtube_download(
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    progress_key = filename
-
-    yt_progress[progress_key] = {"progress": 1, "downloaded_bytes": 0, "total_bytes": 0}
+    # progress_key already set above before the DavidCyrilTech block
+    yt_progress[progress_key] = {"progress": 1, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
 
     # Create temp downloads folder inside workspace Cwd
     temp_dir = os.path.join(os.getcwd(), "temp_downloads")
@@ -1100,9 +1104,10 @@ async def youtube_download(
             "--no-colors",
             "--retries", "3",
             "--fragment-retries", "3",
-            # android_vr and android_creator work without GVS PO tokens and
-            # provide full 4K/1080p/720p quality. player_skip=webpage avoids JS challenge.
-            "--extractor-args", "youtube:player_client=android_vr,android_creator,android;player_skip=webpage",
+            # android_vr/android_creator work without PO tokens for most videos.
+            # ios and web are included as fallbacks for videos where YouTube
+            # has enabled SABR-only streaming (android clients return no URL).
+            "--extractor-args", "youtube:player_client=android_vr,android_creator,android,ios,web;player_skip=webpage",
             # Android YouTube app UA — matches android_vr/android_creator clients
             "--user-agent",
             "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
@@ -1121,9 +1126,11 @@ async def youtube_download(
             video_url
         ]
 
-        # Parallel fragments only work for DASH (regular videos), not HLS live streams
+        # Parallel fragments only work for DASH (regular videos), not HLS live streams.
+        # Insert AFTER format_selector (index 6), not before it (5) — otherwise
+        # yt-dlp parses "--concurrent-fragments" as the format string.
         if not is_live_format:
-            yt_args[5:5] = ["--concurrent-fragments", "4"]
+            yt_args[6:6] = ["--concurrent-fragments", "4"]
 
         print(f"[Stream] Spawning yt-dlp: {' '.join(yt_args)}")
 
@@ -1136,7 +1143,7 @@ async def youtube_download(
         # Register so Cancel button can kill it
         active_procs[filename] = proc
         # Start at 2% so user sees something immediately
-        yt_progress[progress_key] = {"progress": 2, "downloaded_bytes": 0, "total_bytes": 0}
+        yt_progress[progress_key] = {"progress": 2, "downloaded_bytes": 0, "total_bytes": 0, "speed": 0}
 
         video_total = 0
         video_downloaded = 0
