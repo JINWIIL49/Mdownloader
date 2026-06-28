@@ -609,8 +609,19 @@ async def youtube_info(data: dict):
                     'Accept-Language': 'en-US,en;q=0.9',
                 },
             }
-            with yt_dlp.YoutubeDL(playlist_ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+            try:
+                with yt_dlp.YoutubeDL(playlist_ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as pl_err:
+                err_str = str(pl_err)
+                # Translate yt-dlp's raw errors into user-friendly HTTP responses
+                # so the frontend shows a proper message instead of falling through
+                # to the serverless worker (which returns 404 for playlists).
+                if "HTTP Error 404" in err_str or "does not exist" in err_str.lower():
+                    raise HTTPException(status_code=404, detail="Playlist not found. It may be private, deleted, or the URL is incorrect.")
+                if "HTTP Error 403" in err_str or "private" in err_str.lower():
+                    raise HTTPException(status_code=403, detail="This playlist is private or restricted.")
+                raise HTTPException(status_code=500, detail=err_str)
             
             playlist_title = info.get("title", "YouTube Playlist")
             playlist_author = info.get("uploader") or info.get("author") or None
@@ -768,6 +779,8 @@ async def youtube_info(data: dict):
                     }
                 ]
             }
+    except HTTPException:
+        raise  # let 404/403/etc. propagate as-is; don't wrap in 500
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1014,6 +1027,8 @@ async def youtube_download(
                     _bytes_done = 0
                     _last_time = _time.monotonic()
                     _last_bytes = 0
+                    # When no Content-Length, assume 100MB so progress keeps moving
+                    _assumed_total = 100 * 1024 * 1024
                     with urllib.request.urlopen(_dl_req, context=ctx, timeout=60) as resp:
                         while True:
                             if await request.is_disconnected():
@@ -1034,7 +1049,9 @@ async def youtube_download(
                             if total_size > 0:
                                 _pct = 15 + int((_bytes_done / total_size) * 80)
                             else:
-                                _pct = 50
+                                # No Content-Length — estimate against assumed total
+                                # so progress bar keeps moving rather than freezing at 50%
+                                _pct = min(88, 15 + int((_bytes_done / _assumed_total) * 73))
                             yt_progress[progress_key] = {
                                 "progress": min(95, _pct),
                                 "downloaded_bytes": _bytes_done,

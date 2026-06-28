@@ -518,7 +518,8 @@ export const triggerDownloadVia = async (
           statusText = `Downloading… ${effectivePct}%${speedStr} (${doneMB} / ${totalMB} MB)`;
         } else if (totalBytes === 0 && downloadedBytes > 0) {
           const doneMB  = (downloadedBytes / (1024 * 1024)).toFixed(1);
-          statusText = `Recording live… ${effectivePct}% (${doneMB} MB)`;
+          // totalBytes = 0 means no Content-Length (size unknown), not necessarily a live stream
+          statusText = `Downloading… ${effectivePct}%${speedStr} (${doneMB} MB)`;
         }
         toast(makeToastNode(streamLabel, statusText, qualityLabel, effectivePct), {
           id: filename,

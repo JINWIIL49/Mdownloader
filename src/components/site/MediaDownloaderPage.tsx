@@ -236,6 +236,7 @@ export const MediaDownloaderPage = ({
       const localPy = await checkLocalPythonBackend();
       const isLocalPyPlatform = ["youtube-download", "spotify-download", "mediafire-download"].includes(functionName);
       if (isLocalPyPlatform && localPy) {
+        let clientError = false;
         try {
           // Use the mode's override endpoint if provided (e.g. spotify/collection-info for albums/playlists)
           const defaultEndpoint = functionName === "youtube-download" ? "youtube" : (functionName === "spotify-download" ? "spotify" : "mediafire");
@@ -252,10 +253,20 @@ export const MediaDownloaderPage = ({
           });
           if (res.ok) {
             payload = await res.json();
+          } else if (res.status >= 400 && res.status < 500) {
+            // 4xx = the backend knows the answer (not found, private, etc.)
+            // Surface it directly — don't fall back to the serverless worker,
+            // which returns a misleading generic 404 for anything it doesn't handle.
+            clientError = true;
+            const errData = await res.json().catch(() => ({}));
+            throw new Error((errData as any).detail || `Error ${res.status}`);
           } else {
             console.warn(`Local Python backend info failed with status ${res.status}. Falling back to Worker-side resolution.`);
           }
         } catch (e: any) {
+          // Re-throw 4xx errors so the user sees the real message.
+          // Only swallow genuine network / 5xx failures and fall back to the worker.
+          if (clientError) throw e;
           console.warn("Local Python backend info request failed. Falling back to Worker-side resolution:", e.message);
         }
       }
