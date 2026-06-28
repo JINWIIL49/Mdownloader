@@ -725,6 +725,8 @@ async def youtube_info(data: dict):
             
             downloads = []
             qualities = [
+                {"height": 2160, "label": "4K (2160p)"},
+                {"height": 1440, "label": "2K (1440p)"},
                 {"height": 1080, "label": "Full HD (1080p)"},
                 {"height": 720,  "label": "HD (720p)"},
                 {"height": 480,  "label": "SD (480p)"},
@@ -734,13 +736,21 @@ async def youtube_info(data: dict):
             # Detect live streams — they use HLS, not DASH (bestvideo+bestaudio fails on live)
             is_live = bool(info.get("is_live") or info.get("was_live"))
 
+            # Only offer quality tiers that are actually reachable.
+            # max_height_available is the highest resolution yt-dlp reports for this video.
+            # Offering "1080p" when only 360p is available is misleading — yt-dlp would
+            # silently fall back to the best pre-muxed stream which may be much lower quality.
+            max_height_available = max(has_heights) if has_heights else 360
+
             for q in qualities:
-                is_standard = q["height"] in (1080, 720, 480, 360)
                 has_quality = q["height"] in has_heights
+                # For non-standard heights (2160/1440), accept formats within ±20%
                 if not has_quality and q["height"] >= 1440:
                     lo, hi = q["height"] * 0.8, q["height"] * 1.2
                     has_quality = any(lo <= h <= hi and h > 1280 for h in has_heights)
-                if not is_standard and not has_quality:
+                # Skip quality tiers above the max available — yt-dlp would fall back
+                # to a lower-quality progressive stream anyway.
+                if q["height"] > max_height_available and not has_quality:
                     continue
 
                 if is_live:
